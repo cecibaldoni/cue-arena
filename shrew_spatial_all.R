@@ -15,14 +15,17 @@ setwd("~/data/cue_learning")
 doors <- read.csv("trial_door.csv") %>%
   mutate(Trial = paste0("T",trial_n))
 
-coords <- read.csv("food_door_coordinates.csv", sep = ";",header = TRUE) %>%
+coords <- read.csv("food_door_coordinates.csv", sep = ",",header = TRUE) %>%
   mutate(Trial = paste0("T",TRIAL)) %>%
   mutate(unique_trial_ID = paste(SEASON, Trial, ID, sep = "_"))
 
-# tracking <- lapply(list.files("/home/enourani/ownCloud/Work/Collaborations/Cecilia_2022/oct12_data/tracking", full.names = T), read.csv) %>% 
-#   reduce(rbind) %>% 
-#   drop_na(frame) %>% 
+# #read all csv in the folder, put them together, and create a unique_trial_id
+# tracking <- lapply(list.files("/home/ceci/data/cue_learning/tracking", full.names = T), read.csv) %>%
+#   reduce(rbind) %>%
+#   drop_na(frame) %>%
 #   mutate(unique_trial_ID = paste(Season, Trial, ID, sep = "_")) #create unique trial IDs. there are 10 trials per season per shrew
+# #save this 'tracking' dataframe as a csv. from now on I can just load it
+# write.csv(tracking, "/home/ceci/data/cue_learning/data.csv", row.names=FALSE)
 
 tracking <- read.csv("/home/ceci/data/cue_learning/data.csv")
 #transform inf values in NA, then drop them
@@ -47,15 +50,10 @@ clusterEvalQ(mycl, { #the packages that will be used within the ParLapply call
   library(tidyverse)
 })
 
-
 b <- Sys.time()
 other_door_visits_ls <- lapply(trial_ls, function(x){
-  
-  #sp_prep <-parLapply(mycl, trial_ls, function(x){ 
-  
   #to call all blocks one at a time
-  #THE CODE STOPS AT number [[105]], so i deleted the trial (empty tracking)
-  #x = trial_ls[[1]]
+  #x = trial_ls[[15]]
   
   #extract food coordinates for this trial AND convert to a sf object
   food_coords <- coords %>%
@@ -64,7 +62,7 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
     st_as_sf(coords = c("FOOD_x", "FOOD_y"))
   
   food_buffer <- food_coords %>%
-    st_buffer(dist = 4) #half of the length of the largest possible shrew
+    st_buffer(dist = 2.5) #half of the length of the largest possible shrew
   
   #extract door coordinates for this trial AND convert to a sf object
   trial_door_ID <- doors %>%
@@ -94,8 +92,10 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
   
   #convert the track into an sf object
   track_sf <- x %>%
-    st_as_sf(coords = c("x", "y"))
-  
+     st_as_sf(coords = c("x", "y"))
+  #separated_coord <- track_sf %>%
+  #  extract(geometry, c('x', 'y'), '\\((.*), (.*)\\)', convert = TRUE) # %>% 
+    
   #find the points of overlap between track and food
   #WARNING MESSAGE
   at_food <- track_sf %>%
@@ -122,8 +122,14 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
       mutate(visit_to_prev_door = ifelse(Trial == "T1", NA, #assign NA for the first trial
                                          ifelse(nrow(other_door_visits[other_door_visits$Trial == Trial,]) == 0, "No", #if this trial isn't in the other_door_visits, assign no
                                                 ifelse(lag(doors,1) %in% as.character(other_door_visits[other_door_visits$Trial == Trial, "door_ID"]), "Yes", "No"))))
+      #I need the x,y in the .csv sheet. so I drop the geometry before saving the .csv file. but track_sf2 has to keep the geometry, so I create a new variable to save the file
+      track_save <- track_sf_2 %>% 
+        extract(geometry, c('x', 'y'), '\\((.*), (.*)\\)', convert = TRUE) %>% 
+        relocate(x, .after = frame) %>% 
+        relocate(y, .after = x) %>% 
+        relocate(unique_trial_ID, .before = ID)
     
-    write.csv(track_sf_2, file = paste0("/home/ceci/data/cue_learning/results/", unique(x$unique_trial_ID),".csv", sep = ","))
+    write.csv(track_save, file = paste0("/home/ceci/data/cue_learning/results/", unique(x$unique_trial_ID),".csv"))
     
     track_sf_2$food_journey -> x$food_journey 
     trip_to <- x %>% 
@@ -133,9 +139,9 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
       select(x, y, time, food_journey) %>%
       filter(food_journey == "trip_back")
     trj1 <- TrajFromCoords(trip_to, fps = 30, spatialUnits = "cm")
-    #smoothed_to <- TrajSmoothSG(trj1, p=3, n=31)
+   
     #if to use smoothed_to: change in TrajDistance(smoothed_to, startIndex = 1, endIndex = nrow(trj1))
-    #error with smoothed_back: 
+    
     dist_doorfood <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
     #distance_to <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
     trj2 <- TrajFromCoords(trip_back, fps = 30, spatialUnits = "cm")
@@ -180,8 +186,8 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
 #    for x in trial_ls
       
   } else {
-
-    write.csv(data.frame(NULL), file = paste0("/home/ceci/data/cue_learning/results/", unique(x$unique_trial_ID),"_empty.csv"))
+    print(paste0("trial ", unique(x$unique_trial_ID), " not done"))
+    #write.csv(data.frame(NULL), file = paste0("/home/ceci/data/cue_learning/results/", unique(x$unique_trial_ID),"_empty.csv"))
   }
   
   print(paste0("trial ", unique(x$unique_trial_ID), " completed."))
@@ -190,10 +196,10 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
 
 write.csv(other_door_visits, "/home/ceci/Documents/data/cue_learning/other_door_visit.csv", sep = ",", row.names = FALSE)
 
-Sys.time() - b
+staSys.time() - b
 stopCluster(mycl)
 
-mapview(trial_door_coords) + mapview(food_buffer) + mapview(food_coords) + mapview(trial_door_buffer) + mapview(track_sf)
+#mapview(trial_door_coords) + mapview(food_buffer) + mapview(food_coords) + mapview(trial_door_buffer) + mapview(track_sf)
 
 # other_door_visits <- other_door_visits_ls %>%
 #   reduce(rbind)
@@ -202,12 +208,6 @@ mapview(trial_door_coords) + mapview(food_buffer) + mapview(food_coords) + mapvi
 saveRDS(other_door_visits_ls, file = "/home/ceci/Documents/data/cue_learning/trials_sp.rds")
 #saveRDS(other_door_visits, "/home/enourani/ownCloud/Work/Collaborations/Cecilia_2022/5_trials_other_doors.rds")
 saveRDS(other_door_visits, "/home/ceci/Documents/data/trials_other_doors.rds")
-
-distance <- read.csv("/home/ceci/Documents/data/cue_learning/distance/all.csv", row.names=NULL)
-ggplot(distance, aes(trial, distance_to, color=factor(season)))+geom_point()+geom_jitter()
-ggplot(distance, aes(trial, distance_back, color=factor(season)))+geom_point()+geom_jitter()
-#doesnt make much sense because I have to add the actual distance from the door to the food!
-#I mean it depends on the actual distance between the door and the food, and of course in summer is different than spring and winter.
 
 # STEP 4: Calculate speed, distance, tortuosity ------------------------------------------
 
@@ -229,17 +229,7 @@ trial_summaries <- sp_prep %>%
 
 saveRDS(trial_summaries, "/home/enourani/ownCloud/Work/Collaborations/Cecilia_2022/5_trials_summaries.rds")
 
-# STEP 5: Check for visit to previous trial's door ------------------------------------------
 
-other_door_visits <- readRDS("/home/enourani/ownCloud/Work/Collaborations/Cecilia_2022/5_trials_other_doors.rds")
-
-#I'm adding this info to the dataframe that associates the trial to its door
-trial_door <- trial_door"trip_back")))))) #all other points are trip back from food
- %>%
-  rowwise() %>%
-  mutate(visit_to_prev_door = ifelse(Trial == "T1", NA, #assign NA for the first trial
-                                     ifelse(nrow(other_door_visits[other_door_visits$Trial == Trial,]) == 0, "No", #if this trial isn't in the other_door_visitis, assign no
-                                            ifelse(lag(Door,1) %in% as.character(other_door_visits[other_door_visits$Trial == Trial, "Door.1"]), "Yes", "No"))))
 ###########
 ###PLOTS###
 ###########
@@ -250,61 +240,94 @@ library(ggsci)
 library(RColorBrewer)
 display.brewer.all(colorblindFriendly = TRUE)
 
+#I need x, y and food_journey
+#all three can be found in the .csv saved from the lapply call
+#make track_all a list, with split(track_all, track_all$unique_trial_ID), then for loop plots
+track_all <- read.csv("/home/ceci/data/cue_learning/results/all_track.csv", header = TRUE)
 
-##join dataframes 
+#there are some trials with more than 20 revisits, I want to filter them
+df_revisits <- dplyr::filter(track_all, grepl('revisit_40', food_journey))
+df_revisits['unique_trial_ID']
+#List based on unique_trial_ID
+track_all <- split(track_all, track_all$unique_trial_ID)
+select.list(track_all, dplyr::starts_with("spring_T10_20201106-1"))
+a <-track_all$`spring_T10_20201106-1`
+plotfood <- coords %>%
+  as.data.frame(plotfood, row.names = NULL) %>% 
+  filter(unique_trial_ID == unique(a$unique_trial_ID)) %>%
+  dplyr::select(c("FOOD_x", "FOOD_y", "unique_trial_ID"))
+plotdoor <- coords %>%
+  filter(unique_trial_ID == unique(a$unique_trial_ID)) %>%
+  select(4:11, 16)
+plot <- a %>% ggplot(aes(x, y, colour = food_journey)) +
+  ggtitle(a$unique_trial_ID) +
+  geom_point(x = plotdoor$A_x, y = plotdoor$A_y,  size = 3, colour = "black") +
+  geom_point(x = plotdoor$B_x, y = plotdoor$B_y,  size = 3, colour = "black") +
+  geom_point(x = plotdoor$C_x, y = plotdoor$C_y,  size = 3, colour = "black") +
+  geom_point(x = plotdoor$D_x, y = plotdoor$D_y,  size = 3, colour = "black") +
+  geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 8, colour = "darkgreen", alpha = 1/20) +
+  geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 3, colour = "green") +
+  geom_path()
+print(plot)
+#List based on ID
+# track_all <- split(track_all, track_all$ID)
+track_all$food_journey <- as.factor(track_all$food_journey) 
+#OR 
+##track_all[, 'food_journey'] <- as.factor(track_all[, 'food_journey'])
 
-try <- head(trial_ls)
-lapply(try, function(i){
-  #for (i in 1:length(try)){
-    #i = try[[1]]
+sapply(track_all, levels)
+
+testa <- head(track_all)
+lapply(testa, function(i){
+  #i = track_all[[c("spring_T10_20201106-1")]]
+  #i = testa[[1]]
+  plotfood <- coords %>%
+    as.data.frame(plotfood, row.names = NULL) %>% 
+    filter(unique_trial_ID == unique(i$unique_trial_ID)) %>%
+    dplyr::select(c("FOOD_x", "FOOD_y", "unique_trial_ID"))
+  plotdoor <- coords %>%
+    filter(unique_trial_ID == unique(i$unique_trial_ID)) %>%
+    select(4:11, 16)
+  
+  plots <- i %>%
+    #filter(food_journey == c("trip_to", "at_food", "trip_back")) %>% 
+    ggplot(aes(x, y, colour = food_journey)) +
+    ggtitle(i$unique_trial_ID) +
+    geom_point(x = plotdoor$A_x, y = plotdoor$A_y,  size = 3, colour = "black") +
+    geom_point(x = plotdoor$B_x, y = plotdoor$B_y,  size = 3, colour = "black") +
+    geom_point(x = plotdoor$C_x, y = plotdoor$C_y,  size = 3, colour = "black") +
+    geom_point(x = plotdoor$D_x, y = plotdoor$D_y,  size = 3, colour = "black") +
+    geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 8, colour = "darkgreen", alpha = 1/20) +
+    geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 3, colour = "green") +
+    geom_path() #+ 
+    #scale_colour_distiller(palette = "Reds") +
+    #  scale_color_grey(start = 0.8, end = 0.2) +
+    #  scale_color_viridis(option = "D") +
     
-    plotfood <- coords %>%
-      as.data.frame(plotfood, row.names = NULL) %>% 
-      filter(unique_trial_ID == unique(i$unique_trial_ID)) %>%
-      dplyr::select(c("FOOD_x", "FOOD_y", "unique_trial_ID"))
-    plotdoor <- coords %>%
-      filter(unique_trial_ID == unique(i$unique_trial_ID)) %>%
-      select(4:11, 16)
-    #visitseq <- separated_coord %>% 
-    #  filter(unique_trial_ID == unique(visitseq$unique_trial_ID))
-      
-    plots <- i %>%
-    ggplot() +
-      ggtitle(i$unique_trial_ID) +
-      geom_point(x = plotdoor$A_x, y = plotdoor$A_y,  size = 5, colour = "black") +
-      geom_point(x = plotdoor$B_x, y = plotdoor$B_y,  size = 5, colour = "black") +
-      geom_point(x = plotdoor$C_x, y = plotdoor$C_y,  size = 5, colour = "black") +
-      geom_point(x = plotdoor$D_x, y = plotdoor$D_y,  size = 5, colour = "black") +
-      geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 8, colour = "darkgreen", alpha = 1/20) +
-      geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 3, colour = "green") +
-      geom_path(aes(x = x, y = y, color = frame)) +
-        scale_colour_distiller(palette = "Reds") +
-      #  scale_color_grey(start = 0.8, end = 0.2) +
-      #  scale_color_viridis(option = "D") +
-    
-      theme(axis.title.x=element_blank(),
-            axis.text.x=element_blank(),
-            axis.ticks.x=element_blank(),
-            axis.title.y=element_blank(),
-            axis.text.y=element_blank(),
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
           axis.ticks.y=element_blank())
   print(plots)
   #  }
 })
 
-##############
-#New plot, plotting food journey:
-  #needed tracksf2 and NOT track_ls. The difference iss that track_sf_2 is a dataframe, not a list
-##TO HAVE track_sf_2 -> load all.csv
-  #1. I attach foodjourney into the lists, merging from unique like I did with the coordinates (think if it might work)
-  #2. i just use tracksf2 and convert the geometry back to xy columns
 
-#2
-separated_coord <- track_sf_2 %>%
-  extract(geometry, c('lat', 'lon'), '\\((.*), (.*)\\)', convert = TRUE) %>% 
-  select(1:10, 12:14)
+#########
+#recurse#
+#########
+#recurse need a dataframe with x,y, timestamp and ID
+#timestamp should be POSIXct format. but mine is just seconds
 
-distance <- read_csv("/home/ceci/data/cue_learning/distance/all.csv", )
+#check leo the vulture r script and try to adapt it!
+
+####################
+#Plots STRAIGHTNESS#
+####################
+
+distance <- read_csv("/home/ceci/data/cue_learning/distance/all.csv")
 
 ggplot(data = distance) + 
   geom_point(mapping = aes(x = trial, y = walked_to)) +
