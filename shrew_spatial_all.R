@@ -247,7 +247,7 @@ track_all <- read.csv("/home/ceci/data/cue_learning/results/all_track.csv", head
 
 #there are some trials with more than 20 revisits, I want to filter them
 df_revisits <- dplyr::filter(track_all, grepl('revisit_40', food_journey))
-df_revisits['unique_trial_ID']
+# df_revisits['unique_trial_ID']
 #List based on unique_trial_ID
 track_all <- split(track_all, track_all$unique_trial_ID)
 select.list(track_all, dplyr::starts_with("spring_T10_20201106-1"))
