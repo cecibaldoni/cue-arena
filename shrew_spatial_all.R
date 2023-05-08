@@ -10,13 +10,19 @@ library(mapview) #for interactive visualization of the spatial data
 library(parallel)
 library(ggplot2)
 library(trajr)
+library(brms)
+library(gifski)
+library(png)
+library(transformr)
+library(gganimate)
+
 # STEP 1: open data for all trials ------------------------------------------
 setwd("~/data/cue_learning")
 doors <- read.csv("~/data/cue_learning/trial_door.csv") %>%
   mutate(Trial = paste0("T",trial_n))
 
 coords <- read.csv("~/data/cue_learning/food_door_coordinates.csv", sep = ",",header = TRUE) %>%
-  mutate(Trial = paste0("T",TRIAL)) %>%
+  mutate(Trial = paste0("T",TRIAL)) %>% 
   mutate(unique_trial_ID = paste(SEASON, Trial, ID, sep = "_"))
 
 # #read all csv in the folder, put them together, and create a unique_trial_id
@@ -28,19 +34,18 @@ coords <- read.csv("~/data/cue_learning/food_door_coordinates.csv", sep = ",",he
 # write.csv(tracking, "/home/ceci/data/cue_learning/data.csv", row.names=FALSE)
 
 tracking <- read.csv("/home/ceci/data/cue_learning/data.csv")
-#transform inf values in NA, then drop them
-tracking[c('ANGLE')][sapply(tracking[c('ANGLE')], is.infinite)] <- NA
+tracking[c('ANGLE')][sapply(tracking[c('ANGLE')], is.infinite)] <- NA #transform inf values in NA, then drop them
 tracking <- tracking %>% 
   drop_na(ANGLE)
 
 #empty dataframe for saving info on visit to other doors on trip back
 other_door_visits <- data.frame(ID = NULL, door = NULL, Trial = NULL, Season = NULL) #we can also add the length of time spent at the door if needed
-
+no_visits <- data.frame(unique_trial_ID = NULL, other_door_visits = NULL, ID = NULL, trial = NULL, season = NULL)
 trial_ls <- split(tracking, tracking$unique_trial_ID)
 
 #prepare cluster for parallel computation
 #mycl <- makeCluster(10) #the number of CPUs to use (adjust this based on your machine)
-mycl <- makeCluster(3)
+mycl <- makeCluster(4)
 
 clusterExport(mycl, c("coords", "trial_ls", "doors", "other_door_visits")) #define the variable that will be used within the ParLapply call
 
@@ -62,7 +67,7 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
     st_as_sf(coords = c("FOOD_x", "FOOD_y"))
   
   food_buffer <- food_coords %>%
-    st_buffer(dist = 2.5) #half of the length of the largest possible shrew
+    st_buffer(dist = 4) #half of the length of the largest possible shrew
   
   #extract door coordinates for this trial AND convert to a sf object
   trial_door_ID <- doors %>%
@@ -85,7 +90,7 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
   
   all_doors_buffer <- doors_coords %>%
     st_as_sf(coords = c("x","y")) %>%
-    st_buffer(dist = 3.5)
+    st_buffer(dist = 4)
   
   trial_door_buffer <- all_doors_buffer %>%
     filter(door_ID == trial_door_ID)
@@ -107,30 +112,96 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
     mutate(visit_seq = cumsum(new_timediff))
 
   #add food journey info to x IF food was reached
-  if (nrow(at_food) > 0){
-    track_sf_2 <- track_sf %>%
-      full_join(at_food[c("frame", "visit_seq")]) %>%
-      arrange(frame) %>%
-      mutate(food_journey = ifelse(frame == head(at_food$frame,1), "arrival", #the first point in the at_food data is the arrival
-                                   ifelse(frame == tail(at_food[at_food$visit_seq == 1, "frame"],1), "departure", #the last point in the first visit to food
-                                          ifelse(frame < head(at_food$frame,1), "trip_to", #points before point of arrival are trip to food
-                                                 ifelse(between(frame, head(at_food[at_food$visit_seq == 1, "frame"],1), tail(at_food[at_food$visit_seq == 1,"frame"],1)), "at_food", #time spent at food, between arrival and departure from food
-                                                        ifelse(frame %in% at_food[at_food$visit_seq != 1,"frame"],
-                                                               paste("trip_back_revisit", visit_seq, sep = "_"),
-                                                               "trip_back")))))) %>% #all other points are trip back from food
-      rowwise() %>%
-      mutate(visit_to_prev_door = ifelse(Trial == "T1", NA, #assign NA for the first trial
-                                         ifelse(nrow(other_door_visits[other_door_visits$Trial == Trial,]) == 0, "No", #if this trial isn't in the other_door_visits, assign no
-                                                ifelse(lag(doors,1) %in% as.character(other_door_visits[other_door_visits$Trial == Trial, "door_ID"]), "Yes", "No"))))
-      #I need the x,y in the .csv sheet. so I drop the geometry before saving the .csv file. but track_sf2 has to keep the geometry, so I create a new variable to save the file
-      track_save <- track_sf_2 %>% 
-        extract(geometry, c('x', 'y'), '\\((.*), (.*)\\)', convert = TRUE) %>% 
-        relocate(x, .after = frame) %>% 
-        relocate(y, .after = x) %>% 
-        relocate(unique_trial_ID, .before = ID)
+  #if (nrow(at_food) > 0){
+  track_sf_2 <- track_sf %>%
+    full_join(at_food[c("frame", "visit_seq")]) %>%
+    arrange(frame) %>%
+    mutate(old_food_journey = ifelse(frame == head(at_food$frame,1), "arrival", #the first point in the at_food data is the arrival
+                                 ifelse(frame == tail(at_food[at_food$visit_seq == 1, "frame"],1), "departure", #the last point in the first visit to food
+                                        ifelse(frame < head(at_food$frame,1), "trip_to", #points before point of arrival are trip to food
+                                               ifelse(between(frame, head(at_food[at_food$visit_seq == 1, "frame"],1), tail(at_food[at_food$visit_seq == 1,"frame"],1)), "at_food", #time spent at food, between arrival and departure from food
+                                                      ifelse(frame %in% at_food[at_food$visit_seq != 1,"frame"],
+                                                             paste("trip_back_revisit", visit_seq, sep = "_"),
+                                                              "trip_back")))))) #all other points are trip back from food
+  #THIS DOES NOT WORK  
+  #I need to make "being at the exit" sequences, and use this information to label "exploration"
+  #if "being at the exit" only happens once, keep it as trip_back. from the frame after the first "being at the exit sequence" it's exploration.
+   #find overlap exit and track
+  at_exit <- track_sf_2 %>% 
+    filter(old_food_journey == "trip_back") %>% 
+    st_intersection(all_doors_buffer %>% filter(door_ID == trial_door_ID)) %>% # Find frames with intersection with the buffer of the door
+    as.data.frame() %>% 
+    mutate(timediff = frame - lag(frame)) %>%
+    mutate(new_timediff = ifelse(is.na(timediff) | timediff != 1, 1,0)) %>%
+    mutate(exit_seq = cumsum(new_timediff))
+  
+  # trip_back_indices <- which(track_sf_2$old_food_journey == "trip_back") #which values of food_journey are labeled "trip_back"
+  # intersection_frames <- st_intersection(track_sf_2[trip_back_indices,], 
+  #                                        all_doors_buffer %>% filter(door_ID == trial_door_ID)) # Find frames with intersection with the buffer of the door
+  # first_intersection <- min(trip_back_indices[trip_back_indices %in% intersection_frames$frame])# Get the index of the first intersection
+  # last_intersection <- max(trip_back_indices[trip_back_indices %in% intersection_frames$frame]) # Get the index of the last intersection
+  
+
+  if (nrow(at_exit) > 0) {
+    track_sf_2 <- track_sf_2 %>% 
+      full_join(at_exit[c("frame", "exit_seq")]) %>%
+      arrange(frame) %>% 
+      mutate(food_journey = ifelse(frame > tail(at_exit[at_exit$exit_seq == 1, "frame"], 1), "exploration", as.character(old_food_journey))) %>%
+      mutate(food_journey = ifelse(food_journey == "exploration" & !is.na(visit_seq),paste0("exploration_revisit_", visit_seq), food_journey))
+
+  } else {
+    track_sf_2 <- track_sf_2 %>%
+      mutate(food_journey = old_food_journey)
+  }
+    #I need the x,y in the .csv sheet. so I drop the geometry before saving the .csv file. but track_sf2 has to keep the geometry, so I create a new variable to save the file
+  track_save <- track_sf_2 %>% 
+    extract(geometry, c('x', 'y'), '\\((.*), (.*)\\)', convert = TRUE) %>% 
+    relocate(x, .after = frame) %>% 
+    relocate(y, .after = x) %>% 
+    relocate(unique_trial_ID, .before = ID) #%>% 
+    #select(-old_food_journey)
     
-    write.csv(track_save, file = paste0("/home/ceci/data/cue_learning/results/", unique(x$unique_trial_ID),".csv"))
+  write.csv(track_save, file = paste0("/home/ceci/data/cue_learning/results/", unique(x$unique_trial_ID),".csv"))
+  
+  if (sum(track_sf_2$food_journey == "exploration") > 0) {
+    track_sf_2$food_journey -> x$food_journey 
+    trip_to <- x %>% 
+      select(x, y, time, food_journey) %>%
+      filter(food_journey == "trip_to")
+    trip_back <- x %>% 
+      select(x, y, time, food_journey) %>%
+      filter(food_journey == "trip_back")
+    exploration <- x %>% 
+      select(x, y, time, food_journey) %>%
+      filter(food_journey == "exploration")
+    trj1 <- TrajFromCoords(trip_to, fps = 30, spatialUnits = "cm")
+    #if to use smoothed_to: change in TrajDistance(smoothed_to, startIndex = 1, endIndex = nrow(trj1))
+    dist_doorfood <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
+    #distance_to <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
+    trj2 <- TrajFromCoords(trip_back, fps = 30, spatialUnits = "cm")
+    #smoothed_back <- TrajSmoothSG(trj2, p=3, n=19)
+    trj3 <- TrajFromCoords(exploration, fps = 30, spatialUnits = "cm")
+    walk_to <- TrajLength(trj1, startIndex = 1, endIndex = nrow(trj1))
+    walk_back <- TrajLength(trj2, startIndex = 1, endIndex = nrow(trj2))
+    straight_index_to <- TrajStraightness(trj1)
+    straight_index_back <- TrajStraightness(trj2)
+    straight_exploration <- TrajStraightness(trj3)
+    ############
+    #Added visit to previous door, check if it works
+    df = data.frame(x[1,1],x[1,3],x[1,2] ,  dist_doorfood, walk_to, walk_back, straight_index_to, straight_index_back, straight_exploration)
+    colnames(df)[1] = "ID"
+    colnames(df)[2] = "season"
+    colnames(df)[3] = "trial"
+    colnames(df)[4] = "food_door"
+    colnames(df)[5] = "walked_to"
+    colnames(df)[6] = "walked_back"
+    colnames(df)[7] = "straightness_to_food"
+    colnames(df)[8] = "straightness_back"
+    colnames(df)[9] = "straightness_exploration"
     
+    write.csv(df, file = paste0("/home/ceci/data/cue_learning/distance/", unique(x$unique_trial_ID),".csv"))
+
+  } else {
     track_sf_2$food_journey -> x$food_journey 
     trip_to <- x %>% 
       select(x, y, time, food_journey) %>%
@@ -139,9 +210,7 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
       select(x, y, time, food_journey) %>%
       filter(food_journey == "trip_back")
     trj1 <- TrajFromCoords(trip_to, fps = 30, spatialUnits = "cm")
-   
     #if to use smoothed_to: change in TrajDistance(smoothed_to, startIndex = 1, endIndex = nrow(trj1))
-    
     dist_doorfood <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
     #distance_to <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
     trj2 <- TrajFromCoords(trip_back, fps = 30, spatialUnits = "cm")
@@ -163,43 +232,43 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
     colnames(df)[8] = "straightness_back"
     
     write.csv(df, file = paste0("/home/ceci/data/cue_learning/distance/", unique(x$unique_trial_ID),".csv"))
-    # check for overlap between the return trip and other doors
-    
   }
+  
+    # check for overlap between the return trip and other doors
+  #}
   #just put this whole block out of the previous loop
   other_doors <- track_sf_2 %>%
-    filter(food_journey == "trip_back") %>%
+    filter(food_journey %in% c("trip_back", "exploration")) %>%
     st_intersection(all_doors_buffer %>% filter(door_ID != trial_door_ID))
   
   #if there was a visit to another door, save info to other_door_visits dataframe
   if(nrow(other_doors) > 0){
     new_visits <- other_doors %>%
       group_by(door_ID) %>%  slice(1) %>%  #this will give you one row per other door visited
-      dplyr::select(c("ID", "Season", "Trial", "door_ID")) %>%
+      dplyr::select(c("ID", "Season", "Trial", "door_ID", "food_journey")) %>%
       st_drop_geometry() #convert back to non-spatial object
     
     #append to other_door_visits
     other_door_visits <<- rbind(other_door_visits,new_visits) #double arrow assignment operator allows to modify the dataframe in the global environment  
     #return other door visits
     return(new_visits)
-  
-#    for x in trial_ls
       
   } else {
-    print(paste0("trial ", unique(x$unique_trial_ID), " not done"))
-    #write.csv(data.frame(NULL), file = paste0("/home/ceci/data/cue_learning/results/", unique(x$unique_trial_ID),"_empty.csv"))
+    
+    empty_data <- data.frame(unique_trial_ID = unique(x$unique_trial_ID), other_door_visits = 0) %>% 
+      separate(unique_trial_ID, into = c("season", "trial", "ID"), sep = "_")
+    no_visits <<- rbind(no_visits, empty_data)
+   
   }
   
   print(paste0("trial ", unique(x$unique_trial_ID), " completed."))
   
 })
-
-write.csv(other_door_visits, "/home/ceci/data/cue_learning/other_door_visit.csv", sep = ",", row.names = FALSE)
+write.csv(no_visits, "/home/ceci/data/cue_learning/results/no_visits.csv", row.names = FALSE)
+write.csv(other_door_visits, "/home/ceci/data/cue_learning/other_door_visit.csv", row.names = FALSE)
 
 staSys.time() - b
 stopCluster(mycl)
-
-#mapview(trial_door_coords) + mapview(food_buffer) + mapview(food_coords) + mapview(trial_door_buffer) + mapview(track_sf)
 
 # other_door_visits <- other_door_visits_ls %>%
 #   reduce(rbind)
@@ -208,8 +277,6 @@ stopCluster(mycl)
 saveRDS(other_door_visits_ls, file = "/home/ceci/Documents/data/cue_learning/trials_sp.rds")
 #saveRDS(other_door_visits, "/home/enourani/ownCloud/Work/Collaborations/Cecilia_2022/5_trials_other_doors.rds")
 saveRDS(other_door_visits, "/home/ceci/Documents/data/trials_other_doors.rds")
-
-
 
 #################
 ##TURNING ANGLE##
@@ -231,8 +298,8 @@ for (i in 1:length(trial_ls)) {
   trial_ls[[i]]$turning_angle <- turning_angle_degrees
 }
 
-# Define threshold value for turning angle
-angle_threshold <- 85
+# i should define threshold value for turning angle
+angle_threshold <- 125 #???
 
 # Loop through each dataframe in the list
 for (i in 1:length(trial_ls)) {
@@ -248,7 +315,7 @@ for (i in 1:length(trial_ls)) {
 
 for (i in 1:length(trial_ls)) {
   # Extract x, y, and abrupt_turns columns from the dataframe
-  i <- trial_ls[[i]]
+  #i <- trial_ls[[i]]
   x <- trial_ls[[i]]$x
   y <- trial_ls[[i]]$y
   abrupt_turns <- trial_ls[[i]]$abrupt_turns
@@ -270,28 +337,26 @@ for (i in 1:length(trial_ls)) {
 ##SPEED##
 #########
 
-# Loop through each dataframe in the list
 for (i in 1:length(trial_ls)) {
-  # Extract x, y, and frame columns from the dataframe
   x <- trial_ls[[i]]$x
   y <- trial_ls[[i]]$y
-  frame <- trial_ls[[i]]$frame
+  time <- trial_ls[[i]]$time
   
-  # Calculate speed based on x, y, and frame
+  #calculate speed based on x, y, and time
   x_diff <- c(0, diff(x))
   y_diff <- c(0, diff(y))
-  frame_diff <- c(0, diff(frame))
+  time_diff <- c(0, diff(time))
   distance <- sqrt(x_diff^2 + y_diff^2)
-  speed <- distance / frame_diff
+  speed <- distance / time_diff
   
-  # Add speed as a new column to the dataframe
+  #add speed as a new column
   trial_ls[[i]]$speed_new <- speed
   
-  # Calculate expected speed based on frame difference
-  expected_speed <- distance / frame_diff
-  # Calculate the threshold as the 90th percentile of the actual speed
+  # wxpected speed based on frame difference
+  expected_speed <- distance / time_diff
+  #threshold as the 90th percentile of the actual speed
   #it returns the value below which 90% of the data fall
-  speed_threshold <- quantile(speed, 0.95, na.rm = TRUE)
+  speed_threshold <- quantile(speed, 0.80, na.rm = TRUE)
   
   # Find indices where actual speed is above threshold multiple of expected speed
   high_speed <- which(speed > speed_threshold * expected_speed[-1])
@@ -322,8 +387,8 @@ for (i in 1:length(trial_ls)) {
 ################
 ##Previous door#
 ################
-library(brms)
 
+other_door_visits <- read.csv("/home/ceci/data/cue_learning/other_door_visit.csv", header = TRUE)
 previous_door <- other_door_visits %>%
   mutate(unique_trial_ID = paste(Season, Trial, ID, sep = "_")) %>% 
   mutate(unique_trial_ID = as.factor(unique_trial_ID)) %>% 
@@ -358,298 +423,74 @@ result <- result %>%
 
 result <- result[order(result$trial_n), ]
 result$trial <- result$trial_n
-
-#relevel the factors, for some reason t10 comes always after t1
+library(scales)
+#relevel the factors, t10 comes always after t1
 #result$trial <- factor(result$trial, levels = c("T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10"), ordered = TRUE)
 result$season <- factor(result$season, levels = c("summer", "winter", "spring"))
-ggplot(result, aes(x = trial, #fill = factor(previous_door_ID))
-                   )) +
+ggplot(result, aes(x = trial, fill = factor(previous_door_ID))) +
   geom_bar() +
-  facet_wrap(~ season) +
+  scale_x_continuous(breaks= pretty_breaks()) +
+  facet_grid(food_journey ~ season) +
   scale_fill_manual(values = c("red", "darkgreen")) +
   xlab("Trial") +
   ylab("Count") +
   ggtitle("Visit to previous door, by Season and Trial")
 
-
-prior_prev <- get_prior(previous_door_ID ~ season + trial + (season + trial | ID), data = result, family = bernoulli(link="logit"))
-
-model_prevdoor <- brm(
-  previous_door_ID ~ season + trial + (season + trial | ID),  # Dependent variable, predictors, and random slopes
-  data = result,  # Dataset
-  family = bernoulli(link="logit"),  # Bernoulli distribution for binary outcomes
-  prior = prior_prev,  # Specify priors
-  iter = 2000,  # Number of MCMC iterations
-  chains = 4,  # Number of MCMC chains
-  warmup = 1000,  # Number of warmup iterations
-  control = list(adapt_delta = 0.99)  # Control parameters for the Stan sampler
-)
-summary(model_prevdoor)
-plot(model_prevdoor)
-pp_check(model_prevdoor)
-proportion <- function(x){mean(x == 1)}
-pp_check(model_prevdoor,
-         plotfun = "stat", stat = "proportion") +
-  xlab("proportion")
-
-model_prev2 <- brm(
-  previous_door_ID ~ season + trial + (1|ID),  # Dependent variable, predictors, and random effect
-  data = result,  # Dataset
-  family = bernoulli(link ="logit"),  # Bernoulli distribution for binary outcomes
-  prior = c(set_prior("normal(0, 1)", class = "Intercept"),
-            set_prior("normal(0, 1)", class = "b")),  # Specify priors
-  iter = 2000,  # Number of MCMC iterations
-  chains = 4,  # Number of MCMC chains
-  warmup = 1000,  # Number of warmup iterations
-  control = list(adapt_delta = 0.99)  # Control parameters for the Stan sampler
-)
-
-summary(model_prev2)
-plot(model_2)
-pp_check(model_2)
-
-result$previous_door_ID <- as.numeric(result$previous_door_ID)
-
-formula3 <- bf(previous_door_ID ~ trial + season)
-
-model3 <- brm(formula3, data = result, family = bernoulli(link = "logit"), 
-             prior = c(set_prior("normal(0, 1)", class = "Intercept"),
-                       set_prior("normal(0, 1)", class = "b")), 
-             sample_prior = TRUE, cores = 4, chains = 4,
-             iter = 4000, warmup = 1000)
-summary(model3)
-plot(model3)
-pp_check(model3)
-
-loo(model_prevdoor,model_prev2, model3, compare = TRUE)
-
-
-library(bayesplot)
-
-# Get the predicted probabilities from the model
-newdata <- expand.grid(
-  season = levels(result$season),
-  trial = unique(result$trial)
-)
-pred <- posterior_predict(model3, newdata = newdata)
-pred
-hdi <- apply(pred, 1, hdi, prob = 0.95)
-
-# Plot the predicted probabilities and the raw data
-ggplot(result, aes(x = trial, y = previous_door_ID, color = season)) +
-  geom_jitter(position = position_jitter(0.1)) +
-  geom_smooth(aes(y = mean(pred), group = season)) +
-  geom_ribbon(
-     aes(ymin = hdi[, 1], ymax = hdi[, 2], group = season),
-     alpha = 0.2
-  ) +
-  labs(
-    x = "Trial",
-    y = "Probability of Previous Door ID being 1",
-    color = "Season"
-  ) +
-  theme_bw()
-
-#Extract the posterior samples
-post_samples <- posterior_samples(model3)
-#summary() Calculate the posterior probabilities of the effects of "season" and "trial" on "previous_door_ID"
-#Plot the posterior distributions of the effects of "season" and "trial" on "previous_door_ID" 
-plot(model3, pars = c("b_season", "b_trial"))
-library(tidybayes)
-library(bayesplot)
-library(ggdist)
-library(bayesplot)
-
-
-result$season <- factor(result$season)
-result$ID <- factor(result$ID)
-# Create a plot of the observed data
-ggplot(result, aes(x = trial, y = previous_door_ID, color = season)) +
-  geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5) +
-  scale_color_manual(values = c("#33a02c", "#e31a1c", "#1f78b4"), name = "Season") +
-  labs(x = "Trial", y = "Previous Door ID") +
-  theme_bw()
-
-# Create a model plot with posterior predictions
-posterior_predict <- posterior_predict(model_prevdoor, draws = 1000)
-
-model_plot <- pp_check(model_prevdoor, ndraws = 100)
-
-proportion <- function(x){mean(x == 1)}
-pp_check(model_prevdoor,
-         plotfun = "stat", stat = "proportion") +
-  xlab("proportion")
-summary(model_prevdoor)
-
-result$trial <- factor(result$trial, levels = levels(model_prevdoor$fixed[[1]]$trial))
-
-
-result_pp <- add_predicted_draws(object = model_prevdoor, newdata = result)
-
-
-# Create a scatter plot with predicted values
-model_fit <- result_pp %>%
-  ggplot(aes(x = trial, y = .prediction, color = season)) +
-  geom_point(position = position_jitter(width = 0.01), alpha = 0.5) +
-  scale_color_manual(values = c("#33a02c", "#e31a1c", "#1f78b4"), name = "Season") +
-  labs(x = "Trial", y = "Previous Door ID") +
-  theme_bw()
-model_fit
-
-# Add the 95% credible interval as error bars
-model_fit + geom_errorbar(aes(ymin = .lower, ymax = .upper), width = 0.1)
-
-model_plot <- model_plot +
-  geom_jitter(data = result, mapping = aes(x = trial, y = previous_door_ID, color = season),
-              position = position_jitter(width = 0.1), alpha = 0.5)
-
-# Display the model plot
-model_plot
-
-str(result)
-
-
-
-##############
-#STRAIGHTNESS#
-##############
-library(brms)
-library(rstanarm)
-library(bayesplot)
-
-path_data <- read_csv("/home/ceci/data/cue_learning/distance/distance.csv") %>% 
-  select(-X)
-
-path_data$trial <- gsub("T", "", path_data$trial) %>% 
-  as.numeric(path_data$trial)
-path_data <- path_data[order(path_data$trial), ]
-
-path_data$season <- factor(path_data$season, levels = c("summer", "winter", "spring"))
-
-# Define the model formula
-model_formula2 <- bf(straightness_to_food ~ trial + (trial | ID))
-prior2 <- get_prior(model_formula2, data = path_data, family = gaussian())
-
-model2 <-  brm(straightness_to_food ~ trial + (trial | ID), 
-               data = path_data,
-               prior = prior,
-               chains = 4, iter = 2000, warmup = 1000)
-
-#model straightness index as a function of trial and season, with random intercepts for trial and season
-model3 <- brm(straightness_to_food ~ trial + season + (1|trial) + (1|season), data = path_data)
-
-summary(model2) #check for convergence to make sure that the MCMC chains have stabilized
-traceplot(model2) #should show stable chains without obvious patterns
-
-loo(model2,model3, compare = TRUE)
-#model2 is slightly better
-#the difference will be negative if the predictive accuracy of the first model is higher
-
-##PIECEWISE MODEL
-#Create a binary variable indicating whether trial is greater than 6 or not.
-path_data$trial_binary <- ifelse(path_data$trial > 6, 1, 0)
-subset <- path_data[path_data$trial_binary==0, ]
-#new model with breakpoint
-#trial:trial_binary  is the interaction term between trial and trial_binary
-model_formula4 <- bf(straightness_to_food ~ trial + trial_binary + season + trial:trial_binary + (1|trial) + (1|season))
-prior4 <- get_prior(model_formula4, data = path_data, family = gaussian())
-model4 <- brm(straightness_to_food ~ trial + trial_binary + season + trial:trial_binary + (1|trial) + (1|season), 
-              data = path_data[path_data$trial_binary==0, ],
-              iter = 10000,
-              warmup = 2000,
-              control = list(adapt_delta = 0.95),
-              prior = prior4)
-summary(model4)
-
-model_formula5 <- bf(straightness_to_food ~ trial + season + (1|trial) + (1|season))
-prior4 <- get_prior(model_formula4, data = subset, family = gaussian())
-model4 <- brm(straightness_to_food ~ trial + trial_binary + season + trial:trial_binary + (1|trial) + (1|season), 
-              data = path_data[path_data$trial_binary==0, ],
-              iter = 10000,
-              warmup = 2000,
-              control = list(adapt_delta = 0.95),
-              prior = prior4)
-summary(model4)
-
-plot(model4, pars = c("Intercept", "trial", "trial_binary", "season", "trial:trial_binary"))
-#generate predicted values for the straightness index using the modified model
-predictions <- posterior_predict(model4, newdata = expand.grid(trial = 1:10, trial_binary = c(0, 1), season = c("summer", "winter", "spring")))
-#reshape prediction dataframe
-predictions <- predictions %>%
-  as.data.frame() %>%
-  pivot_longer(cols = everything(), names_to = "trial_season_binary", values_to = "predicted_straightness_index") %>%
-  separate(trial_season_binary, into = c("trial", "trial_binary", "season"), sep = "_")
-
-#Plot the predicted straightness index for each trial and season combination, separating the lines for trial_binary = 0 and trial_binary = 1
-ggplot(predictions, aes(x = trial, y = predicted_straightness_index, color = season, linetype = factor(trial_binary))) +
-  geom_line() +
-  geom_point() +
-  labs(x = "Trial", y = "Predicted straightness index", color = "Season", linetype = "Trial binary")
-
-#You can use posterior predictive checks to assess whether 
-#the model adequately captures the patterns in the data. This involves comparing 
-#the observed data to the data generated by the model using the posterior distribution. 
-#If the model fits the data well, the simulated data should look similar to the observed data.
-pp_check(model2, ndraws= 100)
-    
-
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = food_door, color = season))+
-  geom_smooth(mapping = aes(x = as.numeric(trial), y = walked_to, color = season))+
-  scale_color_manual(values = c("green", "coral", "cornflowerblue"))
-
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season))+
-  geom_smooth(mapping = aes(x = trial, y = straightness_to_food, color = season))+
-  scale_color_manual(values = c("coral", "cornflowerblue", "green"))
-
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = straightness_back, color = season))+
-  geom_smooth(mapping = aes(x = trial, y = straightness_back, color = season))+
-  scale_color_manual(values = c("coral", "cornflowerblue", "green"))
-
+result$season <- factor(result$season, levels = c("summer", "winter", "spring"))
+ggplot(result, aes(x = trial, fill = factor(previous_door_ID))) +
+  geom_bar() +
+  facet_grid(ID ~ season) +
+  scale_fill_manual(values = c("red", "darkgreen")) +
+  xlab("Trial") +
+  ylab("Count") +
+  ggtitle("Visit to previous door, by Season and Trial")
 
 ###########
 ###PLOTS###
 ###########
 
 library(viridis)
-install.packages("ggsci")
 library(ggsci)
 library(RColorBrewer)
 display.brewer.all(colorblindFriendly = TRUE)
 
-#I need x, y and food_journey
-#all three can be found in the .csv saved from the lapply call
-#make track_all a list, with split(track_all, track_all$unique_trial_ID), then for loop plots
-track_all <- read.csv("/home/ceci/data/cue_learning/results/all_track.csv", header = TRUE)
+track_all <- read.csv("/home/ceci/data/cue_learning/results/all_track.csv", header = TRUE) %>% 
+  select(-visit_seq, -exit_seq, -X)
 
 #there are some trials with more than 20 revisits, I want to filter them
-df_revisits <- dplyr::filter(track_all, grepl('revisit_40', food_journey))
-# df_revisits['unique_trial_ID']
+df_revisits <- dplyr::filter(track_all, grepl('revisit_', food_journey))
+df_revisits['unique_trial_ID']
+
 #List based on unique_trial_ID
 track_all <- split(track_all, track_all$unique_trial_ID)
-select.list(track_all, dplyr::starts_with("spring_T10_20201106-1"))
-a <-track_all$`spring_T10_20201106-1`
+#select.list(track_all, dplyr::starts_with("spring_T10_20201106-1"))
 
+b <-track_all$`spring_T3_20201031-1`
+b <- track_all$`spring_T1_20201031-1`
+
+#b$food_journey <- factor(b$food_journey, levels = c("trip_to", "arrival", "at_food", "departure", "trip_back", "exploration"), ordered = TRUE)
 plotfood <- coords %>%
   as.data.frame(plotfood, row.names = NULL) %>% 
-  filter(unique_trial_ID == unique(a$unique_trial_ID)) %>%
+  filter(unique_trial_ID == unique(b$unique_trial_ID)) %>%
   dplyr::select(c("FOOD_x", "FOOD_y", "unique_trial_ID"))
-
 plotdoor <- coords %>%
-  filter(unique_trial_ID == unique(a$unique_trial_ID)) %>%
+  filter(unique_trial_ID == unique(b$unique_trial_ID)) %>%
   select(4:11, 16)
-plot <- a %>% ggplot(aes(x, y, colour = food_journey)) +
-  ggtitle(a$unique_trial_ID) +
+plot <- b %>% ggplot(aes(x, y, colour = food_journey)) +
+  ggtitle(b$unique_trial_ID) +
   geom_point(x = plotdoor$A_x, y = plotdoor$A_y,  size = 3, colour = "black") +
   geom_point(x = plotdoor$B_x, y = plotdoor$B_y,  size = 3, colour = "black") +
   geom_point(x = plotdoor$C_x, y = plotdoor$C_y,  size = 3, colour = "black") +
   geom_point(x = plotdoor$D_x, y = plotdoor$D_y,  size = 3, colour = "black") +
   geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 8, colour = "darkgreen", alpha = 1/20) +
   geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 3, colour = "green") +
-  geom_path()
-print(plot)
+  geom_point(size = 5) + transition_time(frame) +
+  labs(title = "Frame: {frame_time}") +
+  shadow_mark(alpha = 0.8, size = 2)
+anim_save("trial.gif")
+plot
+
+
 #List based on ID
 # track_all <- split(track_all, track_all$ID)
 track_all$food_journey <- as.factor(track_all$food_journey) 
@@ -660,7 +501,7 @@ sapply(track_all, levels)
 
 testa <- head(track_all)
 lapply(testa, function(i){
-  i = track_all[[c("spring_T1_20201131-1")]]
+  #i = track_all[[c("spring_T1_20201131-1")]]
   #i = testa[[1]]
   plotfood <- coords %>%
     as.data.frame(plotfood, row.names = NULL) %>% 
@@ -682,8 +523,8 @@ lapply(testa, function(i){
     geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 3, colour = "green") +
     geom_path() #+ 
     #scale_colour_distiller(palette = "Reds") +
-    #  scale_color_grey(start = 0.8, end = 0.2) +
-    #  scale_color_viridis(option = "D") +
+    #scale_color_grey(start = 0.8, end = 0.2) +
+    #scale_color_viridis(option = "D") +
     
     theme(axis.title.x=element_blank(),
           axis.text.x=element_blank(),
@@ -695,6 +536,44 @@ lapply(testa, function(i){
   #  }
 })
 
+path_data <- read.csv("~/data/cue_learning/distance/distance.csv") %>% 
+  mutate(trial = str_remove(trial, "^T"))
+path_data$trial <- str_sort(path_data$trial, numeric = TRUE)
+path_data$trial <- as.integer(path_data$trial)
+
+ggplot(data = path_data) + 
+  #geom_point(mapping = aes(x = trial, y = food_door, color = season))+
+  geom_smooth(mapping = aes(x = as.numeric(trial), y = walked_to, color = season))+
+  scale_color_manual(values = c("green", "coral", "cornflowerblue"))
+
+ggplot(data = path_data) + 
+  #geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season))+
+  #geom_smooth(mapping = aes(x = trial, y = straightness_to_food, color = season))+
+  geom_point(mapping = aes(x = as.numeric(trial), y = straightness_to_food, color = season)) +
+  scale_color_manual(values = c("green", "coral", "cornflowerblue")) + 
+  facet_wrap(~ID)
+
+ggplot(data = path_data) + 
+  #geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season))+
+  #geom_smooth(mapping = aes(x = trial, y = straightness_to_food, color = season))+
+  geom_point(mapping = aes(x = as.numeric(trial), y = straightness_exploration, color = season)) +
+  scale_color_manual(values = c("green", "coral", "cornflowerblue")) + 
+  facet_wrap(~ID)
+
+ggplot(data = path_data) + 
+  geom_smooth(mapping = aes(x = as.numeric(trial), y = straightness_to_food, color = season))+
+  #geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season)) +
+  scale_color_manual(values = c("green", "coral", "cornflowerblue")) #+ 
+  #facet_wrap(~season)
+
+ggplot(data = path_data) + 
+  #geom_point(mapping = aes(x = trial, y = straightness_back, color = season))+
+  geom_smooth(mapping = aes(x = as.numeric(trial), y = straightness_back, color = season))+
+  scale_color_manual(values = c("green", "coral", "cornflowerblue"))
+ggplot(data = path_data) + 
+  #geom_point(mapping = aes(x = trial, y = straightness_back, color = season))+
+  geom_smooth(mapping = aes(x = as.numeric(trial), y = straightness_exploration, color = season))+
+  scale_color_manual(values = c("green", "coral", "cornflowerblue"))
 
 #########
 #recurse#
