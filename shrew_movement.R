@@ -1,6 +1,7 @@
 # Libraries ----
 
 library(tidyverse)
+library(here)
 library(sf) #for spatial manipulation
 library(zoo) #performs linear interpolation on NA values
 library(parallel)
@@ -11,10 +12,11 @@ library(RColorBrewer)
 library(scales)
 
 # Load files ----
-doors <- read.csv("~/data/cue_learning/trial_door.csv")  %>%
-  mutate(Trial = paste0("T",trial_n))
-coords <- read.csv("~/data/cue_learning/coords.csv", sep = ",", header = TRUE)
-tracking <- read.csv("~/data/cue_learning/tracking.csv")
+doors <- read.csv(here("trial_door.csv")) %>%
+  mutate(Trial = paste0("T", trial_n))
+
+coords <- read.csv(here("coords.csv"))
+tracking <- read.csv(here("tracking.csv"))
 
 #empty dataframe for saving info on visit to other doors on trip back
 other_door_visits <- data.frame(ID = NULL, door = NULL, Trial = NULL, Season = NULL) #we can also add the length of time spent at the door if needed
@@ -76,8 +78,8 @@ ggplotly(p, tooltip = "text")
 
 #start empty csv files to store the data
 
-results <- "~/data/cue_learning/processed/master_results.csv"
-distance <- "~/data/cue_learning/processed/master_distance.csv"
+results <- here("processed", "master_results.csv")
+distance <-  here("processed", "master_distance.csv")
 
 #start lapply function
 other_door_visits_ls <- lapply(trial_ls, function(x){
@@ -193,147 +195,89 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
   
   ## Summary metrics ----
   
-  if (sum(track_sf_2$food_journey == "exploration") > 0) {
-    track_sf_2$food_journey -> x$food_journey
-    trip_to <- x %>%
-      select(x, y, time, food_journey) %>%
-      filter(food_journey == "trip_to")
-    trip_back <- x %>%
-      select(x, y, time, food_journey) %>%
-      filter(food_journey == "trip_back")
-    exploration <- x %>%
-      select(x, y, time, food_journey) %>%
-      filter(food_journey == "exploration")
-    at_food <- x %>%
-      filter(food_journey == "at_food") %>%
-      select(time)
-    
-    if(nrow(at_food) > 1) {
-      time_at_food <- max(at_food$time) - min(at_food$time)
-    } else if(nrow(at_food) == 1) {
-      time_at_food <- 1 / 30  # one frame is 1/30th of a second
-    } else {
-      time_at_food <- 0  # No time spent at food
-    }
-    trj1 <- TrajFromCoords(trip_to, fps = 30, spatialUnits = "cm")
-    #if to use smoothed_to: change in TrajDistance(smoothed_to, startIndex = 1, endIndex = nrow(trj1))
-    dist_doorfood <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
-    trj2 <- TrajFromCoords(trip_back, fps = 30, spatialUnits = "cm")
-    trj3 <- TrajFromCoords(exploration, fps = 30, spatialUnits = "cm")
-    walk_to <- TrajLength(trj1, startIndex = 1, endIndex = nrow(trj1))
-    walk_back <- TrajLength(trj2, startIndex = 1, endIndex = nrow(trj2))
-    walk_expl <- TrajLength(trj3, startIndex = 1, endIndex = nrow(trj3))
-    straight_index_to <- TrajStraightness(trj1)
-    straight_index_back <- TrajStraightness(trj2)
-    straight_exploration <- TrajStraightness(trj3)
-    
-    straight_index_to <- if (length(straight_index_to) == 0) NA else straight_index_to
-    
-    df <- data.frame(
-      season = as.character(x[1, 1]), ID = as.character(x[1, 2]), trial = as.character(x[1, 3]), status = as.character(x[1, 4]),
-      dist_doorfood, walk_to, walk_back, walk_expl, 
-      straight_index_to, straight_index_back, straight_exploration,
-      time_at_food,
-      stringsAsFactors = FALSE
-    )
-    colnames(df) <- c(
-      "season", "ID", "trial", "status",
-      "food_door", "walked_to", "walked_back", "walk_exploration",
-      "straightness_to_food", "straightness_back", "straightness_exploration",
-      "time_at_food"
-    )
-    
-    write.table(df, file = distance, append = TRUE, sep = ",", row.names = FALSE, col.names = !file.exists(distance))
-    
-  } else {
-    track_sf_2$food_journey -> x$food_journey
-    trip_to <- x %>%
-      select(x, y, time, food_journey) %>%
-      filter(food_journey == "trip_to")
-    trip_back <- x %>%
-      select(x, y, time, food_journey) %>%
-      filter(food_journey == "trip_back")
-    at_food <- x %>%
-      filter(food_journey == "at_food") %>%
-      select(time)
-    
-    if(nrow(at_food) > 1) {
-      time_at_food <- max(at_food$time) - min(at_food$time)
-    } else if(nrow(at_food) == 1) {
-      time_at_food <- 1 / 30
-    } else {
-      time_at_food <- 0
-    }
-    trj1 <- TrajFromCoords(trip_to, fps = 30, spatialUnits = "cm")
-    #if to use smoothed_to: change in TrajDistance(smoothed_to, startIndex = 1, endIndex = nrow(trj1))
-    dist_doorfood <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
-    #distance_to <- TrajDistance(trj1, startIndex = 1, endIndex = nrow(trj1))
-    trj2 <- TrajFromCoords(trip_back, fps = 30, spatialUnits = "cm")
-    #smoothed_back <- TrajSmoothSG(trj2, p=3, n=19)
-    walk_to <- TrajLength(trj1, startIndex = 1, endIndex = nrow(trj1))
-    walk_back <- TrajLength(trj2, startIndex = 1, endIndex = nrow(trj2))
-    straight_index_to <- TrajStraightness(trj1)
-    straight_index_back <- TrajStraightness(trj2)
-    walk_expl <- NA
-    straight_exploration <- NA
-    
-    straight_index_to <- if (length(straight_index_to) == 0) NA else straight_index_to
-    
-    df <- data.frame(
-      season = as.character(x[1, 1]),
-      ID = as.character(x[1, 2]),
-      trial = as.character(x[1, 3]),
-      status = as.character(x[1, 4]),
-      dist_doorfood, walk_to, walk_back, walk_expl, 
-      straight_index_to, straight_index_back, straight_exploration,
-      time_at_food,
-      stringsAsFactors = FALSE
-    )
-    colnames(df) <- c(
-      "season", "ID", "trial", "status",
-      "food_door", "walked_to", "walked_back", "walk_exploration",
-      "straightness_to_food", "straightness_back", "straightness_exploration",
-      "time_at_food"
-    )
-    
-    write.table(df, file = distance, append = TRUE, sep = ",", row.names = FALSE, col.names = !file.exists(distance))
+  x$food_journey <- track_sf_2$food_journey
+  
+  get_traj_metrics <- function(trip_df) {
+    traj <- TrajFromCoords(trip_df, fps = 30, spatialUnits = "cm")
+    list(length = TrajLength(traj),
+         straightness = {s <- TrajStraightness(traj); if (length(s) == 0) NA_real_ else s},
+         traj = traj)
   }
-  #check for overlap between the return trip and other doors
+  
+  trip_to <- x %>% filter(food_journey == "trip_to") %>% select(x, y, time)
+  trip_back <- x %>% filter(food_journey == "trip_back") %>% select(x, y, time)
+  exploration <- x %>% filter(food_journey == "exploration") %>% select(x, y, time)
+  
+  to_metrics <- get_traj_metrics(trip_to)
+  back_metrics <- get_traj_metrics(trip_back)
+  exploration_metrics <- get_traj_metrics(exploration)
+  
+  dist_doorfood <- if (!is.null(to_metrics$traj)) {
+    TrajDistance(to_metrics$traj, startIndex = 1, endIndex = nrow(to_metrics$traj))
+  } else NA_real_
+  
+  time_summary <- x %>%
+    group_by(unique_trial_ID) %>%
+    summarize(
+      time_to_food = if (any(food_journey == "trip_to")) max(time[food_journey == "trip_to"], na.rm = TRUE) else NA_real_,
+      time_back = if (any(food_journey == "trip_back")) max(time[food_journey == "trip_back"], na.rm = TRUE) else NA_real_,
+      time_exploration = if (any(food_journey == "exploration")) diff(range(time[food_journey == "exploration"], na.rm = TRUE)) else NA_real_,
+      time_at_food = {
+        at_food_times <- time[food_journey == "at_food"]
+        if (length(at_food_times) > 1) max(at_food_times) - min(at_food_times)
+        else if (length(at_food_times) == 1) 1 / 30 else 0
+      },
+      .groups = "drop"
+    )
+  
+  df <- data.frame(
+    unique_trial_ID = as.factor(x$unique_trial_ID[1]),
+    season = as.factor(x$season[1]),
+    ID = as.factor(x$ID[1]),
+    trial = as.factor(x$trial[1]),
+    status = as.factor(x$status[1]),
+    food_door = dist_doorfood,
+    walked_to = to_metrics$length,
+    walked_back = back_metrics$length,
+    walk_exploration = exploration_metrics$length,
+    straightness_to_food = to_metrics$straightness,
+    straightness_back = back_metrics$straightness,
+    straightness_exploration = exploration_metrics$straightness,
+    stringsAsFactors = FALSE
+  ) %>%
+    bind_cols(time_summary %>% select(-unique_trial_ID))
+  
+  write.table(df, file = distance, append = TRUE, sep = ",", row.names = FALSE, col.names = !file.exists(distance))
+  
+  # Check for other door visits
   other_doors <- track_sf_2 %>%
     filter(food_journey %in% c("trip_back", "exploration")) %>%
     st_intersection(all_doors_buffer %>% filter(door_ID != trial_door_ID))
   
-  #if there was a visit to another door, save info to other_door_visits dataframe
-  
-  if(nrow(other_doors) > 0){
+  if (nrow(other_doors) > 0) {
     new_visits <- other_doors %>%
-      group_by(door_ID) %>%  slice(1) %>%  #this will give you one row per other door visited
+      group_by(door_ID) %>% slice(1) %>%
       dplyr::select(c("ID", "season", "trial", "door_ID", "food_journey")) %>%
-      st_drop_geometry() #convert back to non-spatial object
-    
-    #append to other_door_visits
-    other_door_visits <<- rbind(other_door_visits,new_visits) #double arrow assignment operator allows to modify the dataframe in the global environment
-    #return other door visits
+      st_drop_geometry()
+    other_door_visits <<- rbind(other_door_visits, new_visits)
     return(new_visits)
-    
   } else {
     empty_data <- data.frame(unique_trial_ID = unique(x$unique_trial_ID), other_door_visits = 0) %>%
       separate(unique_trial_ID, into = c("season", "trial", "ID"), sep = "_")
     no_visits <<- rbind(no_visits, empty_data)
   }
   print(paste0("trial ", unique(x$unique_trial_ID), " completed."))
-  
 })
+
   
-#write.csv(no_visits, "~/data/cue_learning/no_visits.csv", row.names = FALSE)
-write.csv(other_door_visits, "~/data/cue_learning/processed/other_door_visit.csv", row.names = FALSE)
+write.csv(other_door_visits, here("processed", "other_door_visit.csv"), row.names = FALSE)
 
 stopCluster(mycl)
 
-saveRDS(other_door_visits_ls, file = "~/data/cue_learning/trials_sp.rds")
-saveRDS(other_door_visits, "~/data/cue_learning/other_door_visits.rds")
+saveRDS(other_door_visits_ls, file = here("trials_sp.rds"))
+saveRDS(other_door_visits, file= here("other_door_visits.rds"))
 
-tracking_results <- read.csv("~/data/cue_learning/processed/master_results.csv") %>%
+tracking_results <- read.csv(here("processed", "master_results.csv")) %>%
   mutate(season = as.factor(season),
          ID = as.factor(ID),
          status = as.factor(status),
@@ -345,198 +289,19 @@ tracking_results <- read.csv("~/data/cue_learning/processed/master_results.csv")
 
 trial_list <- split(tracking_results, tracking_results$unique_trial_ID)
 
-trial_list[[1]] %>%
-  filter(food_journey == "trip_to") %>%
-  slice_max(order_by = time) %>%  # Or use tail()
-  pull(time)
-
-# Time ----
-process_time <- function(x) {
-  x %>%
-    group_by(unique_trial_ID) %>%
-    summarize(
-      time_to_food = max(time[food_journey == "trip_to"], na.rm = TRUE),
-      time_exploration = ifelse(
-        any(food_journey == "exploration"),
-        diff(range(time[food_journey == "exploration"], na.rm = TRUE)),
-        NA_real_),
-      .groups = "drop")
-  }
-
-time_results <- lapply(trial_list, process_time) %>% bind_rows()
-
-#write.csv(time_results, "time_results.csv", row.names = FALSE)
 
 # Speed ----
 
-#CHANGE THIS PART COMPLETELY
-top_speeds <- data.frame(
-  speed = numeric(15),
-  unique_trial_ID = character(15),
-  row = integer(15),
-  stringsAsFactors = FALSE
-)
-
-# Loop through each data frame in the list
-for (i in 1:length(trial_ls)) {
-  data <- trial_ls[[i]]
-  
-  # Ensure unique_trial_ID is a character vector to avoid issues when assigning
-  data$unique_trial_ID <- as.character(data$unique_trial_ID)
-  
-  # Get the sorted speeds and their row indices in descending order
-  sorted_speeds <- sort(data$speed, decreasing = TRUE, index.return = TRUE, na.last = NA)
-  
-  # Find how many speeds we can actually store for this data frame (up to 15)
-  num_speeds <- min(length(sorted_speeds$x), 15)
-  
-  # Store the top speeds, unique_trial_ID, and row numbers
-  for (j in 1:num_speeds) {
-    if (sorted_speeds$x[j] > min(top_speeds$speed)) {
-      # Find the position in the top_speeds table where this entry should go
-      replace_idx <- which.min(top_speeds$speed)
-      top_speeds[replace_idx, ] <- list(
-        speed = sorted_speeds$x[j],
-        unique_trial_ID = data$unique_trial_ID[sorted_speeds$ix[j]],
-        row = sorted_speeds$ix[j]
-      )
-    }
-  }
-}
-
-# Sort the results to have the highest speeds at the top
-top_speeds <- top_speeds[order(-top_speeds$speed), ]
-print(top_speeds)
-
-trial_ls[["summer_20200623-1_T4"]]
-
-# df <- trial_list[[1]]
-# ggplot(df, aes(x = time, y = speed_new, colour = food_journey)) +
-#   geom_line() +
-#   labs(title = "Speed Over Time", x = "Time (s)", y = "Speed (units/s)")
-# 
-# ggplot(df, aes(x = food_journey, y = speed_new, fill = food_journey)) +
-#   geom_boxplot() +
-#   labs(title = "Speed Distribution by Food Journey State", x = "Food Journey State", y = "Speed (units/s)") +
-#   theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Improve label readability
-# 
-# # speed_summary <- df %>%
-# #   filter(!(food_journey %in% c("arrival", "departure", "at_food"))) %>% 
-# #   group_by(food_journey) %>%
-# #   summarise(mean_speed = mean(speed, na.rm = TRUE),
-# #             sd_speed = sd(speed, na.rm = TRUE),
-# #             se_speed = sd_speed / sqrt(n()))
-
-# calculate_speed_summary <- function(df) {
-#   df %>%
-#     filter(food_journey %in% c("trip_to", "trip_back")) %>%
-#     group_by(unique_trial_ID, food_journey) %>%
-#     summarise(mean_speed = mean(speed_new, na.rm = TRUE), .groups = 'drop') %>%
-#     pivot_wider(names_from = food_journey, values_from = mean_speed,
-#                 names_prefix = "speed_") %>%
-#     ungroup()
-# }
-
-calculate_speed_summary <- function(df) {
-  df %>%
-    filter(food_journey %in% c("trip_to", "trip_back", "exploration")) %>%
-    group_by(unique_trial_ID, food_journey) %>%
-    summarise(mean_speed = mean(speed, na.rm = TRUE), .groups = 'drop') %>%
-    pivot_wider(
-      names_from = food_journey, 
-      values_from = mean_speed,
-      names_prefix = "speed_", 
-      values_fill = list(mean_speed = NA)
-    ) %>%
-    ungroup() %>%
-    # Add missing columns explicitly if they do not exist
-    mutate(
-      speed_trip_to = if("speed_trip_to" %in% names(.)) speed_trip_to else NA,
-      speed_trip_back = if("speed_trip_back" %in% names(.)) speed_trip_back else NA,
-      speed_exploration = if("speed_exploration" %in% names(.)) speed_exploration else NA
-    )
-}
-
-speed_summaries <- lapply(trial_list, calculate_speed_summary)
-speed_summary <- bind_rows(speed_summaries) %>%
-  select(unique_trial_ID, speed_trip_to, speed_trip_back, speed_exploration)
-max(speed_summary$speed_trip_to, na.rm = TRUE)
-mean(speed_summary$speed_trip_to, na.rm = TRUE)
-
-ggplot(speed_summary %>%
-         pivot_longer(cols = c(speed_trip_to, speed_trip_back, speed_exploration),
-                      names_to = "speed_type", values_to = "speed"),
-       aes(x = speed, fill = speed > 50)) +
-  geom_histogram(binwidth = 5, color = "black") +
-  facet_wrap(~speed_type, scales = "free") +  # One plot per speed type
-  scale_fill_manual(values = c("lightblue", "red"), labels = c("Normal", "Outlier")) +
-  labs(title = "Speed Distribution for Different Types", x = "Speed (cm/s)", y = "Count") +
-  theme_minimal() +
-  theme(legend.title = element_blank())
-
-ggplot(speed_summary %>%
-         filter(speed_trip_to < 50), aes(x = speed_trip_to)) +
-  geom_histogram(binwidth = 5, fill = "lightblue", color = "black") +
-  labs(title = "Filtered Speed Trip To Distribution", x = "Speed (cm/s)", y = "Count") +
-  theme_minimal()
-
-speed_summary %>%
-  filter(speed_trip_to > 100) %>%
-  distinct(unique_trial_ID)
-speed_summary %>%
-  filter(speed_trip_to > 200) %>%
-  distinct(unique_trial_ID)
-
-#exclude these two trials and plot again
-# 
-# speed_summary %>%
-#   filter(!unique_trial_ID %in% c("winter_20201031-1_T8", "winter_20240303-3_T6", "winter_20240225-1_T7", "winter_20240228-1_T10", "winter_20240228-2_T9", "winter_20240303-3_T6", "winter_20240303-3_T9")) %>%
-#   pivot_longer(cols = c(speed_trip_to, speed_trip_back, speed_exploration),
-#                names_to = "speed_type", values_to = "speed") %>%
-#   ggplot(aes(x = speed, fill = speed > 100)) +
-#   geom_histogram(binwidth = 5, color = "black") +
-#   facet_wrap(~speed_type, scales = "free") +  # One plot per speed type
-#   scale_fill_manual(values = c("lightblue", "red"), labels = c("Normal", "Outlier")) +
-#   labs(title = "Speed Distribution for Different Types (Excluding Outliers)", 
-#        x = "Speed (cm/s)", y = "Count")
-# 
-# 
-# tracked_speed <- do.call(rbind, trial_list)
-# rownames(tracked_speed) <- NULL
-# 
-# speed_summary <- tracked_speed %>%
-#   filter(food_journey %in% c("trip_to", "trip_back", "exploration")) %>% 
-#   group_by(food_journey, unique_trial_ID) %>%
-#   summarise(mean_speed = mean(speed, na.rm = TRUE),
-#             sd_speed = sd(speed, na.rm = TRUE),
-#             se_speed = sd_speed / sqrt(n()),
-#             count = n(),
-#             .groups = 'drop') %>% 
-#   filter(mean_speed < 40)
-# 
-# ggplot(speed_summary, aes(x = food_journey, y = mean_speed, fill = food_journey)) +
-#   geom_col() +
-#   geom_errorbar(aes(ymin = mean_speed - sd_speed, ymax = mean_speed + se_speed), width = 0.2) +
-#   labs(title = "Mean Speed by Food Journey State with Error Bars", x = "Food Journey State", y = "Mean Speed (units/s)")
-# 
-# ggplot(speed_summary, aes(x = mean_speed, fill = food_journey)) +
-#   geom_density(alpha = 0.4) +
-#   labs(x = "Speed (cm/s)", y = "Density") +
-#   scale_fill_brewer(palette = "Set1") +
-#   facet_wrap(~status)
-# ggplot(speed_summary, aes(x = status, y = mean_speed)) +
-#   geom_boxplot() +
-#   scale_fill_brewer(palette = "Set1")
 
 # Previous door ----
 
-other_door_visits <- read.csv("~/data/cue_learning/other_door_visit.csv", header = TRUE) %>% 
+other_door_visits <- read.csv(here("processed", "other_door_visit.csv"), header = TRUE) %>% 
   mutate(unique_trial_ID = paste(season, ID, trial, sep = "_"),
          unique_trial_ID = as.factor(unique_trial_ID),
          trial_n = as.integer(str_remove(trial, "T")),
          door_ID = as.factor(door_ID),
          sequence = as.factor(if_else(str_starts(unique_trial_ID, "winter_2024"), "winter_2024", "other")))
-doors <- read.csv("~/data/cue_learning/trial_door.csv") %>%
+doors <- read.csv(here("trial_door.csv")) %>%
   mutate(door = as.factor(door),
          sequence = as.factor(season)) %>%
   relocate(sequence, .before = season) %>%
@@ -695,8 +460,10 @@ lapply(testa, function(i){
 
 path_data <- read.csv("~/data/cue_learning/distance/master_distance.csv") %>% 
   mutate(trial = str_remove(trial, "^T"))
+
 path_data$trial <- str_sort(path_data$trial, numeric = TRUE)
 path_data$trial <- as.integer(path_data$trial)
+
 str(path_data$trial)
 ggplot(data = path_data) + 
   #geom_point(mapping = aes(x = trial, y = food_door, color = season))+
