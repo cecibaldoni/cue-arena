@@ -316,7 +316,7 @@ doors <- doors %>%
 doors <- doors %>%
   mutate(previous_door_ID = as.factor(previous_door_ID))
 
-result <- other_door_visits %>%
+door_result <- other_door_visits %>%
   mutate(previous_trial_n = trial_n - 1)  %>% 
   left_join(doors, by = c("previous_trial_n" = "trial_n", "sequence")) %>%
   mutate(door_match = door_ID == previous_door_ID,
@@ -334,8 +334,8 @@ result <- other_door_visits %>%
 
 
 #relevel the factors, t10 comes always after t1
-#result$trial <- factor(result$trial, levels = c("T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10"), ordered = TRUE)
-ggplot(result, aes(x = trial_n, fill = door_match)) +
+#door_result$trial <- factor(door_result$trial, levels = c("T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10"), ordered = TRUE)
+ggplot(door_result, aes(x = trial_n, fill = door_match)) +
   geom_bar(stat = "count") +  # Counts the occurrences
   scale_x_continuous(breaks = pretty_breaks()) +
   #scale_fill_brewer(palette = "Set1") +
@@ -348,48 +348,12 @@ ggplot(result, aes(x = trial_n, fill = door_match)) +
   theme_bw()
 
 
-library(BayesFactor)
-
-table_door_status <- table(result$door_match, result$status)
-bf_door_status <- contingencyTableBF(table_door_status, sampleType = "indepMulti", fixedMargin = "rows")
-print(bf_door_status)
-
-table_door_food_journey <- table(result$door_match, result$food_journey)
-bf_door_food_journey <- contingencyTableBF(table_door_food_journey, sampleType = "indepMulti", fixedMargin = "rows")
-print(bf_door_food_journey)
-
-
-model_door <- brm(formula = bf(door_match ~ status + (1 | ID)),
-             data = result, family = bernoulli("logit"), 
-             prior = c(prior(exponential(0.65), class = "sd"),
-                       prior(normal(0,1), class ="b")),
-             chains = 4, iter = 4000, cores = 4,
-             control = list(adapt_delta = 0.95, max_treedepth = 15))
-
-model_door <- brm(formula = bf(door_match ~ status*food_journey + (1 | ID)),
-                  data = result, family = bernoulli("logit"), 
-                  prior = c(prior(exponential(0.65), class = "sd"),
-                            prior(normal(0,1), class ="b")),
-                  chains = 4, iter = 4000, cores = 4,
-                  control = list(adapt_delta = 0.95, max_treedepth = 15))
-
-
 ## Plots ----
 
-library(viridis)
-library(ggsci)
-library(RColorBrewer)
-display.brewer.all(colorblindFriendly = TRUE)
-
-#there are some trials with more than 20 revisits, I want to filter them
-df_revisits <- dplyr::filter(tracking_results, grepl('revisit_', food_journey))
-df_revisits['unique_trial_ID']
-
 #List based on unique_trial_ID
-trial_list
-#select.list(tracking_results, dplyr::starts_with("spring_T10_20201106-1"))
 
 b <-trial_list[["summer_20200623-1_T4"]]
+#Does not work because exploration and trip_back can have revisits
 #b$food_journey <- factor(b$food_journey, levels = c("trip_to", "arrival", "at_food", "departure", "trip_back", "exploration"), ordered = TRUE)
 plotfood <- coords %>%
   as.data.frame(plotfood, row.names = NULL) %>% 
@@ -407,101 +371,8 @@ b %>% ggplot(aes(x, y, colour = food_journey)) +
   geom_point(x = plotdoor$D_x, y = plotdoor$D_y,  size = 4, colour = "black") +
   geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 16, colour = "darkgreen", alpha = 1/20) +
   geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 8, colour = "green") +
-  geom_point(size = 2) +
-  theme(legend.position="none")
+  geom_point(size = 2)#+
+ # theme(legend.position="none")
 
 anim_save("trial.gif")
 plot
-
-
-#List based on ID
-# track_all <- split(track_all, track_all$ID)
-track_all$food_journey <- as.factor(track_all$food_journey) 
-#OR 
-##track_all[, 'food_journey'] <- as.factor(track_all[, 'food_journey'])
-
-sapply(track_all, levels)
-
-testa <- head(track_all)
-lapply(testa, function(i){
-  #i = track_all[[c("spring_T1_20201131-1")]]
-  #i = testa[[1]]
-  plotfood <- coords %>%
-    as.data.frame(plotfood, row.names = NULL) %>% 
-    filter(unique_trial_ID == unique(i$unique_trial_ID)) %>%
-    dplyr::select(c("FOOD_x", "FOOD_y", "unique_trial_ID"))
-  plotdoor <- coords %>%
-    filter(unique_trial_ID == unique(i$unique_trial_ID)) %>%
-    select(4:11, 16)
-  
-  plots <- i %>%
-    #filter(food_journey == c("trip_to", "at_food", "trip_back")) %>% 
-    ggplot(aes(x, y, colour = food_journey)) +
-    ggtitle(i$unique_trial_ID) +
-    geom_point(x = plotdoor$A_x, y = plotdoor$A_y,  size = 3, colour = "black") +
-    geom_point(x = plotdoor$B_x, y = plotdoor$B_y,  size = 3, colour = "black") +
-    geom_point(x = plotdoor$C_x, y = plotdoor$C_y,  size = 3, colour = "black") +
-    geom_point(x = plotdoor$D_x, y = plotdoor$D_y,  size = 3, colour = "black") +
-    geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 8, colour = "darkgreen", alpha = 1/20) +
-    geom_point(x = plotfood$FOOD_x, y = plotfood$FOOD_y,  size = 3, colour = "green") +
-    geom_path() + 
-    #scale_colour_distiller(palette = "Reds") +
-    #scale_color_grey(start = 0.8, end = 0.2) +
-    #scale_color_viridis(option = "D") +
-    theme(axis.title.x=element_blank(),
-          axis.text.x=element_blank(),
-          axis.ticks.x=element_blank(),
-          axis.title.y=element_blank(),
-          axis.text.y=element_blank(),
-          axis.ticks.y=element_blank())
-  print(plots)
-  #  }
-})
-
-path_data <- read.csv("~/data/cue_learning/distance/master_distance.csv") %>% 
-  mutate(trial = str_remove(trial, "^T"))
-
-path_data$trial <- str_sort(path_data$trial, numeric = TRUE)
-path_data$trial <- as.integer(path_data$trial)
-
-str(path_data$trial)
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = food_door, color = season))+
-  geom_smooth(mapping = aes(x = trial, y = walked_to, color = status)) +
-  facet_wrap(~status)
-  #scale_color_manual(values = c("green", "coral", "cornflowerblue"))
-
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season))+
-  #geom_smooth(mapping = aes(x = trial, y = straightness_to_food, color = season))+
-  geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season)) +
-  scale_color_manual(values = c("green", "coral", "cornflowerblue")) + 
-  facet_wrap(~ID)
-
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season))+
-  #geom_smooth(mapping = aes(x = trial, y = straightness_to_food, color = season))+
-  geom_point(mapping = aes(x = as.numeric(trial), y = straightness_exploration, color = season)) +
-  scale_color_manual(values = c("green", "coral", "cornflowerblue")) + 
-  facet_wrap(~ID)
-
-ggplot(data = path_data) + 
-  geom_smooth(mapping = aes(x = trial, y = straightness_to_food, color = season), se = FALSE) +
-  geom_point(mapping = aes(x = trial, y = straightness_to_food, color = season), alpha = 0.3) +
-  scale_color_manual(values = c("green", "coral", "cornflowerblue"), name = "Season") +
-  scale_x_continuous(limits = c(1, 10), breaks = seq(1, 10, 1), name = "Trial Number") +
-  scale_y_continuous(name = "Straightness (to food)") +
-  labs(title = "Straightness to Food by Trial Number")
-
-# + 
-  #facet_wrap(~season)
-
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = straightness_back, color = season))+
-  geom_smooth(mapping = aes(x = as.numeric(trial), y = straightness_back, color = season))+
-  scale_color_manual(values = c("green", "coral", "cornflowerblue"))
-ggplot(data = path_data) + 
-  #geom_point(mapping = aes(x = trial, y = straightness_back, color = season))+
-  geom_smooth(mapping = aes(x = as.numeric(trial), y = straightness_exploration, color = season))+
-  scale_color_manual(values = c("green", "coral", "cornflowerblue"))
-
