@@ -88,6 +88,13 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
   ## Or:
   #x= trial_ls[[1]]
   
+  # recalculate speed from x and y
+  x <- x %>%
+    mutate(distance = sqrt((x - lag(x))^2 + (y - lag(y))^2),
+           speed = ifelse(is.na(distance), 0, distance * 30)) %>%  # Use correct FPS here
+    select(-distance)
+  
+  
   #extract food coordinates for this trial AND convert to a sf object
   # Extract food coordinates and buffer, convert to sf object
   food_coords <- coords %>%
@@ -268,7 +275,6 @@ other_door_visits_ls <- lapply(trial_ls, function(x){
   }
   print(paste0("trial ", unique(x$unique_trial_ID), " completed."))
 })
-
   
 write.csv(other_door_visits, here("processed", "other_door_visit.csv"), row.names = FALSE)
 
@@ -353,8 +359,10 @@ ggplot(door_result, aes(x = trial_n, fill = door_match)) +
 #List based on unique_trial_ID
 
 b <-trial_list[["summer_20200623-1_T4"]]
-#Does not work because exploration and trip_back can have revisits
+
 #b$food_journey <- factor(b$food_journey, levels = c("trip_to", "arrival", "at_food", "departure", "trip_back", "exploration"), ordered = TRUE)
+## Does not work because exploration and trip_back can have revisits
+
 plotfood <- coords %>%
   as.data.frame(plotfood, row.names = NULL) %>% 
   filter(unique_trial_ID == unique(b$unique_trial_ID)) %>%
